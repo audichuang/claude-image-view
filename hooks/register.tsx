@@ -84,6 +84,9 @@ async function show($: EngineInterface, draft: string) {
   const list: PastedImage[] = []
   for (const n of numbers) list.push(await describe($, dir, n))
   shownKey = list.every(image => image.path !== null) ? key : undefined
+  // Image numbers only grow, so a picture no longer in the draft won't be asked for again.
+  const kept = new Set(list.map(image => image.path))
+  for (const cache of [sizes, inline]) for (const path of cache.keys()) if (!kept.has(path)) cache.delete(path)
   await update($, images, () => list)
 }
 
