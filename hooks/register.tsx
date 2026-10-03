@@ -2,8 +2,10 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { PastedImage } from '../types'
-import { fitRow, imageNumbers, pngSize } from './layout'
+import { blockCells, drawsPictures, fitRow, imageNumbers, pngSize } from './layout'
 import type { Size } from './layout'
+import { decodeThumb } from './png'
+import type { Thumb } from './png'
 
 // Pasting an image raises no prompt.edit (the tag only shows up on the next keystroke),
 // so the draft is polled instead.
@@ -25,9 +27,27 @@ let shownKey: string | undefined
 let isChecking = false
 const sizes = new Map<string, Size | null>()
 // Each cached PNG small enough to send as bytes, by path. Bytes work where a file name
-// doesn't: terminals that can't read files (xterm.js, so Orca and VS Code) and ssh, where
-// the file is on the remote machine and the terminal on this one.
+// doesn't, such as over ssh, where the file is on the remote machine and the terminal on this one.
 const inline = new Map<string, string>()
+// Small decoded copies for terminals that can't draw pictures, which get colored blocks instead.
+const thumbs = new Map<string, Thumb | null>()
+let pictures: boolean | undefined
+
+// The terminal's own words about itself: there is no capability query, so go by its environment.
+async function canDrawPictures($: EngineInterface): Promise<boolean> {
+  if (pictures === undefined) {
+    pictures = drawsPictures({
+      TERM: await $.env.get('TERM'),
+      TERM_PROGRAM: await $.env.get('TERM_PROGRAM'),
+      TMUX: await $.env.get('TMUX'),
+      KITTY_WINDOW_ID: await $.env.get('KITTY_WINDOW_ID'),
+      GHOSTTY_RESOURCES_DIR: await $.env.get('GHOSTTY_RESOURCES_DIR'),
+      WEZTERM_EXECUTABLE: await $.env.get('WEZTERM_EXECUTABLE'),
+      CLAUDE_IMAGE_VIEW_RENDERER: await $.env.get('CLAUDE_IMAGE_VIEW_RENDERER'),
+    })
+  }
+  return pictures
+}
 
 // Claude Code caches each paste as <root>/<project>/<session>/images/<n>.png, where <root>
 // is $CLAUDE_CODE_TMPDIR (or /tmp) plus claude-<uid>. The project folder is named after a
@@ -66,7 +86,13 @@ async function describe($: EngineInterface, dir: string | undefined, n: number):
     const head = base64 === undefined ? undefined : pngSize(base64)
     if (head === null) return { n, path: null, size: null }
     sizes.set(path, head ?? null)
-    if (base64 !== undefined && decodedBytes(base64) <= MAX_INLINE_BYTES) inline.set(path, base64)
+    if (base64 === undefined) {
+      // Neither inline bytes nor blocks: the Image below reads the file.
+    } else if (!(await canDrawPictures($))) {
+      thumbs.set(path, decodeThumb(Uint8Array.fromBase64(base64)))
+    } else if (decodedBytes(base64) <= MAX_INLINE_BYTES) {
+      inline.set(path, base64)
+    }
   }
   return { n, path, size: sizes.get(path) ?? null }
 }
@@ -86,7 +112,7 @@ async function show($: EngineInterface, draft: string) {
   shownKey = list.every(image => image.path !== null) ? key : undefined
   // Image numbers only grow, so a picture no longer in the draft won't be asked for again.
   const kept = new Set(list.map(image => image.path))
-  for (const cache of [sizes, inline]) for (const path of cache.keys()) if (!kept.has(path)) cache.delete(path)
+  for (const cache of [sizes, inline, thumbs]) for (const path of cache.keys()) if (!kept.has(path)) cache.delete(path)
   await update($, images, () => list)
 }
 
@@ -102,7 +128,7 @@ async function check($: EngineInterface) {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    tmpRoot = found = missed = shownKey = undefined
+    tmpRoot = found = missed = shownKey = pictures = undefined
     $.clock.every(POLL_MS, () => check($))
     return next(e)
   })
@@ -112,7 +138,7 @@ export const register: Register = on => {
     const list = await read($, images)
     if (list.length === 0) return next(e)
 
-    const { Box, Image, Text } = $.ui.resolve(e)
+    const { Box, Image, Raster, Text } = $.ui.resolve(e)
     const cells = fitRow(list.map(image => image.size), e.props.maxRows, e.props.bodyColumns)
     const below = await next(e)
 
@@ -122,11 +148,18 @@ export const register: Register = on => {
           {list.map((image, i) => {
             const { columns, rows } = cells[i] ?? { columns: 4, rows: 1 }
             return (
-              <Box flexDirection="column" alignItems="center" borderStyle="round" borderDimColor>
+              <Box key={`tile-${image.n}`} flexDirection="column" alignItems="center" borderStyle="round" borderDimColor>
                 {image.path === null ? (
                   <Box width={columns} height={rows} alignItems="center" justifyContent="center">
                     <Text dimColor wrap="truncate">no preview</Text>
                   </Box>
+                ) : thumbs.get(image.path) ? (
+                  <Raster
+                    key={`blocks-${image.n}`}
+                    columns={columns}
+                    rows={rows}
+                    cells={blockCells(thumbs.get(image.path)!, columns, rows)}
+                  />
                 ) : (
                   <Image
                     key={`image-${image.n}`}

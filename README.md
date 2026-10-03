@@ -56,11 +56,12 @@ Claude Code saves every pasted image to a cache folder for the session, as `<tmp
 
 1. Every 200ms it reads the prompt box and looks for `[Image #n]` tags. It checks on a timer because pasting an image doesn't raise an edit event.
 2. For each tag it finds the cached PNG and reads its size from the PNG header.
-3. It draws the thumbnails in the band above the prompt with Claude Code's `Image` element. A PNG up to 2 MiB is sent to the terminal as bytes, so it also works in terminals that can't read files themselves (xterm.js based ones such as Orca) and over ssh, where the file is on the remote machine. A larger PNG is passed by file name and the terminal reads it.
+3. It draws the thumbnails in the band above the prompt. In a terminal with the kitty graphics protocol it uses Claude Code's `Image` element. A PNG up to 2 MiB is sent to the terminal as bytes, so it also works over ssh, where the file is on the remote machine; a larger PNG is passed by file name and the terminal reads it.
+4. Anywhere else (Terminal.app, VS Code, Orca, tmux, most others) it decodes the PNG itself, averages it down to a small thumbnail, and draws it in colored half blocks (`▀`) with Claude Code's `Raster` element. It's lower resolution than a real picture, but it's the picture. xterm.js based terminals such as Orca and VS Code take kitty images but not the Unicode placeholders Claude Code places them with, so they get blocks too.
 
 ## Security
 
-Claude Image View is local-only. It makes no network requests and writes no files. It reads the prompt box, lists Claude Code's temp folder to find the current session's image cache, and reads the first bytes of each pasted image. It runs `id -u` once to find the `claude-<uid>` temp folder.
+Claude Image View is local-only. It makes no network requests and writes no files. It reads the prompt box, lists Claude Code's temp folder to find the current session's image cache, and reads each pasted image (up to Claude Code's 4 MiB read limit). It runs `id -u` once to find the `claude-<uid>` temp folder. It also reads a few terminal variables (`TERM`, `TERM_PROGRAM`, `TMUX` and similar) to tell which kind of thumbnail the terminal can draw.
 
 Run `claude plugin validate` on the repo to see every event it hooks and every call it makes.
 
@@ -68,9 +69,9 @@ Run `claude plugin validate` on the repo to see every event it hooks and every c
 
 - Claude Code v2.1.287 or later (mods support)
 - macOS or Linux
-- A terminal with the kitty graphics protocol, such as [Ghostty](https://ghostty.org) or [kitty](https://sw.kovidgoyal.net/kitty/)
+- A terminal with the kitty graphics protocol, such as [Ghostty](https://ghostty.org) or [kitty](https://sw.kovidgoyal.net/kitty/), for full-resolution thumbnails. Any other terminal gets a half-block thumbnail (best with truecolor).
 
-Other terminals show `[Image #n]` in each tile instead of the picture. The Claude Desktop app already previews pasted images, so the mod draws nothing there.
+The Claude Desktop app already previews pasted images, so the mod draws nothing there.
 
 ## Troubleshooting
 
@@ -78,7 +79,9 @@ Other terminals show `[Image #n]` in each tile instead of the picture. The Claud
 
 **The tile says "no preview".** The mod couldn't find the cached file. Claude Code may have moved where it stores pasted images. Please [open an issue](https://github.com/jarrodwatts/claude-image-view/issues) with your Claude Code version.
 
-**The tile shows `[Image #1]` text instead of the picture.** Your terminal doesn't support the kitty graphics protocol. See [Requirements](#requirements).
+**The tile is blocky.** Your terminal doesn't support the kitty graphics protocol, so the mod draws the picture in colored half blocks. Use a terminal with the protocol for sharp thumbnails.
+
+**The tile shows `[Image #1]` text instead of the picture.** The mod chose real pictures but your terminal can't draw them (it's probably a kitty-compatible terminal that doesn't implement the protocol). Set `CLAUDE_IMAGE_VIEW_RENDERER=blocks` in the environment you start Claude Code from. `CLAUDE_IMAGE_VIEW_RENDERER=image` forces real pictures the other way, for a terminal the mod doesn't recognize.
 
 ## Development
 
