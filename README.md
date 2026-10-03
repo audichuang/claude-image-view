@@ -52,15 +52,15 @@ Paste one or more images and a row of thumbnails sits above the prompt, each lab
 
 ## How It Works
 
-Claude Code saves every pasted image to a cache folder for the session, as `<tmp>/<project>/<session>/images/<n>.png`, and puts an `[Image #n]` tag in the prompt. Claude Image View is a [mod](https://code.claude.com/docs/en/plugins/mods/overview):
+Claude Code saves every pasted image to a cache folder for the session, as `<tmp>/claude-<uid>/<project>/<session>/images/<n>.png` (`<tmp>` is `$CLAUDE_CODE_TMPDIR`, or `/tmp`), and puts an `[Image #n]` tag in the prompt. Claude Image View is a [mod](https://code.claude.com/docs/en/plugins/mods/overview):
 
 1. Every 200ms it reads the prompt box and looks for `[Image #n]` tags. It checks on a timer because pasting an image doesn't raise an edit event.
 2. For each tag it finds the cached PNG and reads its size from the PNG header.
-3. It draws the thumbnails in the band above the prompt with Claude Code's `Image` element. The terminal reads the file itself, so the image data never passes through the mod.
+3. It draws the thumbnails in the band above the prompt with Claude Code's `Image` element. A PNG up to 2 MiB is sent to the terminal as bytes, so it also works in terminals that can't read files themselves (xterm.js based ones such as Orca) and over ssh, where the file is on the remote machine. A larger PNG is passed by file name and the terminal reads it.
 
 ## Security
 
-Claude Image View is local-only. It makes no network requests and writes no files. It reads the prompt box, lists Claude Code's temp folder to find the current session's image cache, and reads the first bytes of each pasted image. If `CLAUDE_CODE_TMPDIR` isn't set, it runs `id -u` once to find the default temp folder.
+Claude Image View is local-only. It makes no network requests and writes no files. It reads the prompt box, lists Claude Code's temp folder to find the current session's image cache, and reads the first bytes of each pasted image. It runs `id -u` once to find the `claude-<uid>` temp folder.
 
 Run `claude plugin validate` on the repo to see every event it hooks and every call it makes.
 

@@ -11,32 +11,47 @@ const POLL_MS = 200
 
 const images = atom({ plugin: 'image-view', key: 'images' } as const, [] as PastedImage[])
 
+// A picture sent to the terminal as bytes is capped at 2 MiB decoded.
+const MAX_INLINE_BYTES = 2 * 1024 * 1024
+// How long a session whose image folder isn't there yet waits before the temp root is listed again.
+const RESCAN_MS = 1000
+
 let tmpRoot: string | undefined
 let found: { sessionId: string; dir: string } | undefined
+let missed: { sessionId: string; at: number } | undefined
 // The image numbers last drawn, so an unchanged draft doesn't rewrite state; undefined
 // while a drawn image's file is still missing, so the next poll looks again.
 let shownKey: string | undefined
 let isChecking = false
 const sizes = new Map<string, Size | null>()
+// Each cached PNG small enough to send as bytes, by path. Bytes work where a file name
+// doesn't: terminals that can't read files (xterm.js, so Orca and VS Code) and ssh, where
+// the file is on the remote machine and the terminal on this one.
+const inline = new Map<string, string>()
 
-// Claude Code caches each paste as <tmp>/<project>/<session>/images/<n>.png. The project
-// folder is named after a working directory that may since have moved, so find it by the
-// session id instead of rebuilding it.
+// Claude Code caches each paste as <root>/<project>/<session>/images/<n>.png, where <root>
+// is $CLAUDE_CODE_TMPDIR (or /tmp) plus claude-<uid>. The project folder is named after a
+// working directory that may since have moved, so find it by the session id instead of
+// rebuilding it.
 async function imagesDir($: EngineInterface): Promise<string | undefined> {
   const sessionId = await $.session.id()
   if (found?.sessionId === sessionId) return found.dir
+  const now = await $.clock.now()
+  if (missed?.sessionId === sessionId && now - missed.at < RESCAN_MS) return undefined
   if (tmpRoot === undefined) {
-    const fromEnv = await $.env.get('CLAUDE_CODE_TMPDIR')
-    tmpRoot = fromEnv ?? `/tmp/claude-${(await $.process.run(['id', '-u'])).stdout.trim()}`
+    const base = ((await $.env.get('CLAUDE_CODE_TMPDIR')) ?? '/tmp').replace(/\/+$/, '')
+    tmpRoot = `${base}/claude-${(await $.process.run(['id', '-u'])).stdout.trim()}`
   }
   const entries = await $.fs.list(tmpRoot).catch(() => [])
   for (const entry of entries) {
     const dir = `${tmpRoot}/${entry.name}/${sessionId}/images`
     if (entry.kind === 'dir' && (await $.fs.exists(dir))) {
       found = { sessionId, dir }
+      missed = undefined
       return dir
     }
   }
+  missed = { sessionId, at: now }
   return undefined
 }
 
@@ -44,14 +59,21 @@ async function describe($: EngineInterface, dir: string | undefined, n: number):
   const path = `${dir}/${n}.png`
   if (dir === undefined || !(await $.fs.exists(path))) return { n, path: null, size: null }
   if (!sizes.has(path)) {
-    const head = await $.fs.read(path, { as: 'bytes' }).then(
-      ({ base64 }) => pngSize(base64),
-      () => undefined, // too big to read: still drawable, just without its aspect ratio
+    const base64 = await $.fs.read(path, { as: 'bytes' }).then(
+      bytes => bytes.base64,
+      () => undefined, // too big to read: still drawable from the file, just without its aspect ratio
     )
+    const head = base64 === undefined ? undefined : pngSize(base64)
     if (head === null) return { n, path: null, size: null }
     sizes.set(path, head ?? null)
+    if (base64 !== undefined && decodedBytes(base64) <= MAX_INLINE_BYTES) inline.set(path, base64)
   }
   return { n, path, size: sizes.get(path) ?? null }
+}
+
+function decodedBytes(base64: string): number {
+  const padding = base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0
+  return (base64.length / 4) * 3 - padding
 }
 
 async function show($: EngineInterface, draft: string) {
@@ -77,6 +99,7 @@ async function check($: EngineInterface) {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
+    tmpRoot = found = missed = shownKey = undefined
     $.clock.every(POLL_MS, () => check($))
     return next(e)
   })
@@ -104,7 +127,7 @@ export const register: Register = on => {
                 ) : (
                   <Image
                     key={`image-${image.n}`}
-                    source={{ file: image.path, format: 'png' }}
+                    source={inline.has(image.path) ? { png: inline.get(image.path)! } : { file: image.path, format: 'png' }}
                     columns={columns}
                     rows={rows}
                     alt={`[Image #${image.n}]`}

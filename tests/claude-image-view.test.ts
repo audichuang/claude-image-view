@@ -58,7 +58,8 @@ test('a pasted image shows without another keystroke and clears when the draft d
   let draft = 'see [Image #1] [Image #2]'
   on('session.start', () => ({ cwd: '/work' }))
   on('prompt.read', () => ({ value: { text: draft, cursor: draft.length } }))
-  on('env.get', () => ({ value: '/tmp/claude-501' }))
+  on('env.get', () => ({ value: undefined }))
+  on('process.run', () => ({ value: { exitCode: 0, stdout: '501\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
   on('session.id', () => ({ value: 'sess-1' }))
   // Another project's folder and a stray file sit beside the one holding this session.
   const entry = { size: 0, mtimeMs: 0, isLink: false }
@@ -78,7 +79,8 @@ test('a pasted image shows without another keystroke and clears when the draft d
 
   const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
   const image = await ui.find({ type: 'Image' })
-  expect(image?.props).toMatchObject({ source: { file: `${dir}/1.png`, format: 'png' }, columns: 24, rows: 6 })
+  // Sent as bytes, so it draws where the terminal can't read the file (xterm.js, ssh).
+  expect(image?.props).toMatchObject({ source: { png: pngHead(800, 400) }, columns: 24, rows: 6 })
   // #2 has no cached file, so it gets a placeholder tile instead of a broken Image.
   expect(await ui.find({ type: 'Text', text: 'no preview' })).toBeDefined()
   await ui.unmount()
@@ -89,4 +91,62 @@ test('a pasted image shows without another keystroke and clears when the draft d
   const after = await $.ui.mount({ ...BAND, surface: 'terminal' })
   expect(await after.find({ type: 'Image' })).toBeUndefined()
   expect(await after.find({ type: 'Text', text: 'engine band' })).toBeDefined()
+})
+
+function cacheWorld(on: Parameters<Parameters<typeof test>[1]>[1], root: string, sessionId: string, png: string, hasFolder = true) {
+  const dir = `${root}/-work/${sessionId}/images`
+  const listed: string[] = []
+  on('session.start', () => ({ cwd: '/work' }))
+  on('prompt.read', () => ({ value: { text: '[Image #1]', cursor: 10 } }))
+  on('process.run', () => ({ value: { exitCode: 0, stdout: '501\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  on('session.id', () => ({ value: sessionId }))
+  on('fs.list', ($, e) => {
+    listed.push(e.path)
+    return { value: [{ name: '-work', kind: 'dir', size: 0, mtimeMs: 0, isLink: false }] }
+  })
+  on('fs.exists', ($, e) => ({ value: hasFolder && (e.path === dir || e.path === `${dir}/1.png`) }))
+  on('fs.read', () => ({ value: { base64: png } }))
+  on('ui.render', () => ({ type: 'Text', props: {}, children: ['engine band'] }))
+  return { dir, listed }
+}
+
+test('CLAUDE_CODE_TMPDIR moves the cache root but keeps the claude-<uid> folder', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.env(on, { CLAUDE_CODE_TMPDIR: '/scratch/tmp/' })
+  const { listed } = cacheWorld(on, '/scratch/tmp/claude-501', 'sess-2', pngHead(800, 400))
+
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await clock.advance(200)
+
+  expect(listed).toEqual(['/scratch/tmp/claude-501'])
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect((await ui.find({ type: 'Image' }))?.props).toMatchObject({ source: { png: pngHead(800, 400) } })
+})
+
+// 33 header bytes plus 2.1 MB of zeros.
+test('a PNG over the 2 MiB inline cap is drawn from its file', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.env(on, {})
+  const { dir } = cacheWorld(on, '/tmp/claude-501', 'sess-3', pngHead(800, 400) + 'AAAA'.repeat(700_000))
+
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await clock.advance(200)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect((await ui.find({ type: 'Image' }))?.props).toMatchObject({ source: { file: `${dir}/1.png`, format: 'png' } })
+})
+
+test('a session with no image folder yet lists the temp root at most once a second', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.env(on, {})
+  // The folder holding this session doesn't exist yet.
+  const { listed } = cacheWorld(on, '/tmp/claude-501', 'sess-4', pngHead(800, 400), false)
+
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await clock.advance(200)
+  expect(listed.length).toBe(1)
+  await clock.advance(600)
+  expect(listed.length).toBe(1)
+  await clock.advance(600)
+  expect(listed.length).toBe(2)
 })
