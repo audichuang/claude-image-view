@@ -71,10 +71,12 @@ export function drawsPictures(env: Env): boolean {
   if (env.TMUX) return false
   const term = env.TERM ?? ''
   const program = env.TERM_PROGRAM ?? ''
+  // The terminal running us names itself here. The variables below are inherited, so a terminal
+  // started from Ghostty or kitty (Orca, VS Code) still carries them and must not count as one.
+  if (program) return /^(ghostty|WezTerm)$/i.test(program) || /kitty/i.test(term)
   return (
     Boolean(env.KITTY_WINDOW_ID || env.GHOSTTY_RESOURCES_DIR || env.WEZTERM_EXECUTABLE) ||
-    /kitty|ghostty/i.test(term) ||
-    /^(ghostty|WezTerm)$/i.test(program)
+    /kitty|ghostty/i.test(term)
   )
 }
 

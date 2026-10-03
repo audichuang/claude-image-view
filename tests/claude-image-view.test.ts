@@ -219,6 +219,9 @@ test('only kitty-protocol terminals get real pictures', () => {
   expect(drawsPictures({ TERM: 'xterm-256color', TERM_PROGRAM: 'Apple_Terminal' })).toBe(false)
   expect(drawsPictures({ TERM_PROGRAM: 'vscode' })).toBe(false)
   expect(drawsPictures({ TERM_PROGRAM: 'Orca', TERM: 'xterm-256color' })).toBe(false)
+  // Orca started from Ghostty inherits Ghostty's variables, but it is still Orca drawing.
+  expect(drawsPictures({ TERM_PROGRAM: 'Orca', TERM: 'xterm-256color', GHOSTTY_RESOURCES_DIR: '/Applications/Ghostty.app/Contents/Resources/ghostty' })).toBe(false)
+  expect(drawsPictures({ TERM_PROGRAM: 'vscode', KITTY_WINDOW_ID: '1' })).toBe(false)
   // tmux eats the protocol, even inside kitty.
   expect(drawsPictures({ TERM: 'xterm-kitty', TMUX: '/tmp/tmux-501/default,1,0' })).toBe(false)
   // An override beats guessing from the environment.
@@ -228,7 +231,7 @@ test('only kitty-protocol terminals get real pictures', () => {
 
 for (const [name, env, drawn, notDrawn] of [
   ['a terminal without pictures gets the thumbnail in colored blocks', { TERM_PROGRAM: 'Apple_Terminal' }, 'Raster', 'Image'],
-  ['Orca (xterm.js, no kitty placeholders) gets colored blocks', { TERM_PROGRAM: 'Orca', TERM: 'xterm-256color' }, 'Raster', 'Image'],
+  ['Orca (xterm.js, no kitty placeholders) gets colored blocks', { TERM_PROGRAM: 'Orca', TERM: 'xterm-256color', GHOSTTY_RESOURCES_DIR: '/Applications/Ghostty.app/Contents/Resources/ghostty' }, 'Raster', 'Image'],
   ['a kitty terminal still gets the real picture', { TERM: 'xterm-kitty' }, 'Image', 'Raster'],
 ] as const) {
   test(name, async ($, on) => {
